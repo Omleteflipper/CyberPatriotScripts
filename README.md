@@ -1,6 +1,6 @@
 **CyberPatriot Scripts & Resources**
 
-Scripts and resources prepared for CyberPatriot XVIII Season.  
+Monkies Scripts and resources for CyberPatriot XVIII Season.  
 Contains Linux, Windows, and Server hardening scripts, along with supporting documentation.
 
 **Documentation**
