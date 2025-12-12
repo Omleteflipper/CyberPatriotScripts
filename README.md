@@ -6,6 +6,7 @@ Contains Linux, Windows, and Server hardening scripts, along with supporting doc
 **Documentation**
 
 [CYBERPATRIOT VULNERABILITY CATEGORY SUMMARY](https://docs.google.com/document/d/1VDKEa_9s1NkpVV9j02kEiZ0ER2IrWVrFk-nO6FYYhUY/edit?usp=sharing)
+[PRACTICE IMAGES FOR TESTING](https://docs.google.com/spreadsheets/d/1cdVHtk4w5JDJCYy-EO2_ycr0ZqMgUyjFOVDn5Y8eGVw/edit?gid=0#gid=0)
 
 **Repository Structure**
 
