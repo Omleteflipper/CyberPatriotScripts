@@ -1,26 +1,34 @@
+#!/bin/bash
 # policy_violations.sh
 # - Detect Policy Violations:
 #   - Malware indicators (RATs, backdoors, keyloggers)
 #   - Prohibited files (archives, confidential docs)
 #   - Unwanted software (games, servers, hacking tools)
 # - Produces logs only; destructive removals are manual by default
-#!/bin/bash
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/os_misc.sh"
 
 log "[policy_violations] Detecting policy violations (non-destructive)."
 
 # ========== MALWARE INDICATORS ==========
-log "[policy_violations] Searching for possible backdoors and RAT indicators..."
 
-# Look for suspicious autorun or persistence in crontab/systemd timers
-grep -RIs --exclude-dir={/proc,/sys,/dev} -E "nc -e|/bin/bash -i|/bin/sh -i|bash -i|/dev/tcp" /etc /home /var 2>/dev/null | tee ./policy_backdoor_scan.log
+# Ask user if they want to run the slow scan
+read -r -p "[policy_violations] Run deep malware scan for backdoors and RAT indicators? This may take several minutes. (y/N): " ans
+if [[ "$ans" =~ ^[Yy] ]]; then
+    log "[policy_violations] Searching for possible backdoors and RAT indicators..."
 
-# Search for suspicious binaries in /tmp or commonly abused directories
-find /tmp /var/tmp /dev/shm -type f -perm -u=x -print > ./policy_exec_in_tmp.log 2>/dev/null
+    # Look for suspicious autorun or persistence in crontab/systemd timers
+    grep -RIs --exclude-dir={/proc,/sys,/dev} -E "nc -e|/bin/bash -i|/bin/sh -i|bash -i|/dev/tcp" /etc /home /var 2>/dev/null | tee ./policy_backdoor_scan.log
 
-# Look for known keylogger filenames / suspicious LD_PRELOAD entries
-grep -RIs --exclude-dir={/proc,/sys,/dev} -E "LD_PRELOAD|keylogger|logkeys|xinput_calibrator" /etc /home /var 2>/dev/null | tee ./policy_ldpreload_scan.log
+    # Search for suspicious binaries in /tmp or commonly abused directories
+    find /tmp /var/tmp /dev/shm -type f -perm -u=x -print > ./policy_exec_in_tmp.log 2>/dev/null
+
+    # Look for known keylogger filenames / suspicious LD_PRELOAD entries
+    grep -RIs --exclude-dir={/proc,/sys,/dev} -E "LD_PRELOAD|keylogger|logkeys|xinput_calibrator" /etc /home /var 2>/dev/null | tee ./policy_ldpreload_scan.log
+else
+    log "[policy_violations] Deep malware scan skipped by user."
+fi
 
 # ========== PROHIBITED FILES ==========
 log "[policy_violations] Searching for prohibited file types (archives, confidential docs, installers)..."

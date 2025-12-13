@@ -1,142 +1,159 @@
 #!/bin/bash
 # app_security.sh
-# - Install security packages (uses install_packages wrapper from os_misc)
-# - Configure rkhunter defaults & run update/check/propupd
-# - Run chkrootkit (if present)
-# - SSH hardening helper (sets common robust options)
-# - Optional interactive helper to set IDS interface (Suricata/ntopng) safely with backups
-#
-# NOTE: This script attempts to be additive and non-destructive. It creates backups before changes.
+# - Application & service-level security hardening
+# - No antivirus / malware scanning
+# - Interactive prompts before risky changes
+# - Safe defaults, non-destructive where possible
 
-set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/os_misc.sh"
-log "[app_security] Starting application security setup."
 
-# CURATED SECURITY PACKAGE LIST
-SEC_PACKAGES=(rkhunter chkrootkit clamav clamav-daemon libpam-google-authenticator apparmor apparmor-utils fail2ban net-tools debsums)
-# Use install_packages wrapper (will enable universe on Ubuntu-family if needed)
-install_packages "${SEC_PACKAGES[@]}" || log "[app_security] Some packages failed to install; check apt logs."
+log "[app_security] Starting application and service security hardening."
 
-# rkhunter default config (safe, mirrors original)
-log "[app_security] Writing /etc/default/rkhunter (backup preserved)."
-cp /etc/default/rkhunter /etc/default/rkhunter.bak 2>/dev/null || true
-cat > /etc/default/rkhunter << EOF
-CRON_DAILY_RUN="yes"
-CRON_DB_UPDATE="yes"
-APT_AUTOGEN="yes"
-REPORT_EMAIL="root"
-EOF
+############################################
+# Helper: confirm before risky actions
+############################################
+confirm_long() {
+    echo
+    echo "⚠  NOTE: This step may take time or affect running services."
+    prompt_continue "Do you want to continue with this step?"
+}
 
-# Run rkhunter checks (best-effort)
-if command -v rkhunter &> /dev/null; then
-    log "[app_security] Updating rkhunter DB and running checks (may be slow)."
-    rkhunter --update || true
-    rkhunter --check || true
-    rkhunter --propupd || true
-fi
+############################################
+# SSH SERVICE HARDENING
+############################################
+log "[app_security] SSH hardening checks."
 
-# Run chkrootkit if available
-if command -v chkrootkit &> /dev/null; then
-    log "[app_security] Running chkrootkit..."
-    chkrootkit || true
-fi
+if confirm_long; then
+    SSHD_CONFIG="/etc/ssh/sshd_config"
 
-# Clam AV db update (if present)
-if command -v freshclam &> /dev/null; then
-    log "[app_security] Updating ClamAV DB..."
-    freshclam || true
-fi
+    if [[ -f "$SSHD_CONFIG" ]]; then
+        log_info "Checking SSH configuration (no restart yet)."
 
-# SSH hardening - create a backup and set safe defaults
-if command -v sshd &> /dev/null; then
-    log "[app_security] Hardening SSH config (backing up current file)."
-    sshd_config="/etc/ssh/sshd_config"
-    cp "$sshd_config" "${sshd_config}.bak" 2>/dev/null || true
+        grep -q "^PermitRootLogin no" "$SSHD_CONFIG" \
+            || log_info "Consider setting: PermitRootLogin no"
 
-    set_sshd_setting() {
-        local setting="$1"
-        local value="$2"
-        if grep -qE "^[#]*\s*${setting}" "$sshd_config"; then
-            sed -i "s|^[#]*\s*${setting}.*|${setting} ${value}|" "$sshd_config"
-        else
-            echo "${setting} ${value}" >> "$sshd_config"
-        fi
-    }
+        grep -q "^PasswordAuthentication no" "$SSHD_CONFIG" \
+            || log_info "Consider setting: PasswordAuthentication no (keys only)"
 
-    set_sshd_setting "PermitRootLogin" "no"
-    set_sshd_setting "PasswordAuthentication" "no"
-    set_sshd_setting "ChallengeResponseAuthentication" "no"
-    set_sshd_setting "UsePAM" "yes"
-    set_sshd_setting "HostbasedAuthentication" "no"
-    set_sshd_setting "Protocol" "2"
-    set_sshd_setting "LogLevel" "VERBOSE"
-    set_sshd_setting "X11Forwarding" "no"
-    set_sshd_setting "MaxAuthTries" "3"
-    set_sshd_setting "PermitEmptyPasswords" "no"
+        grep -q "^Protocol 2" "$SSHD_CONFIG" \
+            || log_info "Ensure SSH Protocol 2 is enforced"
 
-    # Restart sshd (best-effort)
-    systemctl restart ssh || log "[app_security] ssh restart returned non-zero; verify sshd_config before reconnecting."
-    log "[app_security] SSH hardening applied; verify manually."
-fi
+        grep -q "^X11Forwarding no" "$SSHD_CONFIG" \
+            || log_info "Consider disabling X11Forwarding"
 
-# === Optional: Interactive helper to set IDS interface (Suricata/ntopng)
-if [[ -z "${NET_IFACE:-}" ]]; then
-    read -r -p "Do you want to configure an interface for Suricata/ntopng now? (y/N): " _ans_iface
-    if [[ "${_ans_iface,,}" == "y" ]]; then
-        echo
-        echo "Run 'ip addr show' to list interfaces and find the one with your IP."
-        ip addr show
-        echo
-        read -r -p "Enter your active network interface (e.g., ens3, eth0, enp0s3): " NET_IFACE_INPUT
-        NET_IFACE="${NET_IFACE_INPUT:-}"
-    fi
-fi
-
-if [[ -n "${NET_IFACE:-}" ]]; then
-    log "[app_security] NET_IFACE set to $NET_IFACE; will attempt safe edits with backups."
-
-    # Backup dir
-    mkdir -p ./backups/ids || true
-
-    # Suricata: try to update simple `interface:` lines, otherwise add a comment/notice (YAML is fragile with sed)
-    if [[ -f /etc/suricata/suricata.yaml ]]; then
-        cp /etc/suricata/suricata.yaml ./backups/ids/suricata.yaml.bak 2>/dev/null || true
-        if grep -qE '^\s*interface:' /etc/suricata/suricata.yaml; then
-            sed -i "s|^\(\s*interface:\s*\).*|\1${NET_IFACE}|" /etc/suricata/suricata.yaml
-            log "[app_security] Updated simple 'interface:' line in suricata.yaml (verify more complex YAML sections manually)."
-        else
-            echo "# NOTE: Please set Suricata to monitor interface: ${NET_IFACE}" >> /etc/suricata/suricata.yaml
-            log "[app_security] Appended note to suricata.yaml instructing interface change (manual review recommended)."
-        fi
+        log_info "SSH hardening review complete (manual edit recommended)."
     else
-        log "[app_security] /etc/suricata/suricata.yaml not found; skipping Suricata config."
+        log_info "sshd_config not found; skipping SSH hardening."
     fi
-
-    # ntopng: try to set -i or interface= lines
-    if [[ -f /etc/ntopng/ntopng.conf ]]; then
-        cp /etc/ntopng/ntopng.conf ./backups/ids/ntopng.conf.bak 2>/dev/null || true
-        if grep -qE '^\s*-i\s+' /etc/ntopng/ntopng.conf; then
-            sed -i "s|^\(\s*-i\s*\).*| -i ${NET_IFACE}|" /etc/ntopng/ntopng.conf
-        elif grep -qE '^\s*interface=' /etc/ntopng/ntopng.conf; then
-            sed -i "s|^\(\s*interface=\).*|\1${NET_IFACE}|" /etc/ntopng/ntopng.conf
-        else
-            echo "-i ${NET_IFACE}" >> /etc/ntopng/ntopng.conf
-        fi
-        log "[app_security] ntopng config updated (verify)."
-    else
-        log "[app_security] /etc/ntopng/ntopng.conf not found; skipping ntopng config."
-    fi
-
-    # Ask user whether to restart services
-    read -r -p "Restart suricata/ntopng services now (if present)? (y/N): " _r2
-    if [[ "${_r2,,}" == "y" ]]; then
-        systemctl restart suricata || true
-        systemctl restart ntopng || true
-        log "[app_security] Attempted to restart suricata/ntopng (if available)."
-    else
-        log "[app_security] Skipped restarting IDS services; remember to restart after manual verification."
-    fi
+else
+    log_info "SSH hardening skipped by user."
 fi
 
-log "[app_security] Completed application security tasks."
+############################################
+# SYSTEM SERVICES HARDENING
+############################################
+log "[app_security] Reviewing enabled system services."
+
+if confirm_long; then
+    systemctl list-unit-files --type=service --state=enabled \
+        > ./enabled_services.log
+
+    log_info "Enabled services saved to ./enabled_services.log"
+    log_info "Review for unnecessary services (e.g., cups, avahi, rpcbind)."
+else
+    log_info "Service review skipped."
+fi
+
+############################################
+# FIREWALL STATUS CHECK (NON-DESTRUCTIVE)
+############################################
+log "[app_security] Firewall status check."
+
+if command -v ufw >/dev/null 2>&1; then
+    ufw status verbose > ./ufw_status.log 2>&1
+    log_info "UFW detected. Status written to ./ufw_status.log"
+else
+    log_info "UFW not installed. No firewall changes made."
+fi
+
+############################################
+# WEB SERVER HARDENING (Apache / Nginx)
+############################################
+log "[app_security] Web server hardening checks."
+
+if confirm_long; then
+    if systemctl is-active --quiet apache2; then
+        log_info "Apache detected."
+
+        APACHE_CONF="/etc/apache2/conf-enabled/security.conf"
+        [[ -f "$APACHE_CONF" ]] && grep -E "ServerTokens|ServerSignature" "$APACHE_CONF" \
+            || log_info "Consider setting ServerTokens Prod and ServerSignature Off"
+    fi
+
+    if systemctl is-active --quiet nginx; then
+        log_info "Nginx detected."
+
+        grep -R "server_tokens" /etc/nginx 2>/dev/null \
+            || log_info "Consider setting: server_tokens off;"
+    fi
+else
+    log_info "Web server hardening skipped."
+fi
+
+############################################
+# DATABASE SERVICE HARDENING
+############################################
+log "[app_security] Database service checks."
+
+if confirm_long; then
+    if systemctl is-active --quiet mysql || systemctl is-active --quiet mariadb; then
+        log_info "MySQL/MariaDB detected."
+        log_info "Ensure:"
+        log_info "  - No anonymous users"
+        log_info "  - Root login restricted"
+        log_info "  - bind-address not 0.0.0.0 unless required"
+    fi
+
+    if systemctl is-active --quiet postgresql; then
+        log_info "PostgreSQL detected."
+        log_info "Ensure pg_hba.conf enforces strong auth and no trust entries."
+    fi
+else
+    log_info "Database hardening skipped."
+fi
+
+############################################
+# FILE PERMISSIONS & SUID CHECK
+############################################
+log "[app_security] Checking for SUID/SGID binaries."
+
+if confirm_long; then
+    find / -perm /6000 -type f 2>/dev/null > ./suid_sgid_files.log
+    log_info "SUID/SGID files logged to ./suid_sgid_files.log"
+else
+    log_info "SUID/SGID scan skipped."
+fi
+
+############################################
+# CRON & TIMERS REVIEW
+############################################
+log "[app_security] Reviewing scheduled tasks."
+
+if confirm_long; then
+    crontab -l 2>/dev/null > ./user_cron.log || true
+    ls -l /etc/cron.* > ./system_cron_dirs.log 2>/dev/null
+
+    systemctl list-timers --all > ./systemd_timers.log
+
+    log_info "Cron jobs and timers logged for review."
+else
+    log_info "Cron/timer review skipped."
+fi
+
+############################################
+# SUMMARY
+############################################
+log "[app_security] Hardening review complete."
+log "[app_security] No services were restarted or disabled automatically."
+log "[app_security] All changes are review-based unless manually applied."

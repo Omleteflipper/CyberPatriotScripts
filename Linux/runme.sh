@@ -78,7 +78,6 @@ MODULES=(
   os_misc.sh
   app_updates.sh
   app_security.sh
-  malware_checks.sh
   defense.sh
   local_policies.sh
   service_audit.sh
