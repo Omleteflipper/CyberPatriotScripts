@@ -1,91 +1,150 @@
-# os_misc.sh
-# - Variables & env detection
-# - Logging helpers: log, log_info
-# - ring_bell, line_sep, prompt_continue
-# - Arg parsing (--help --debug --version --license)
-# - Sudo / privilege check
 #!/bin/bash
+# os_misc.sh
+# - Distro detection (ID, NAME, VERSION_ID, CODENAME)
+# - Logging helpers (log, log_info)
+# - Repo helpers: ensure_universe_repo(), enable_debian_nonfree()
+# - apt wrappers: apt_get_update(), install_packages()
+# - Sudo check and small utilities
 
-##### IMPORTANT VARS #####
+##### VARIABLES & METADATA #####
 unalias -a
-version="v1.7.9"
+version="v1.8.0"
 start_time=$(date +"%Y-%m-%d, %I:%M:%S %p")
-start_secs=$(date +%s.%N)
 LOGFILE="./linux_script.log"
 output_file="./linux_script_output.log"
-starting_dir=$(pwd)
-distro_id=$(grep '^ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
-distro_codename=$(grep '^VERSION_CODENAME=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
 debug=0
-help=0
-license=0
-version_arg=0
 
-##### FUNCTIONS #####
+# default distro vars (will be populated by detect_distro)
+distro_id=""
+distro_name=""
+distro_like=""
+version_id=""
+codename=""
+
+##### UTILITY FUNCTIONS #####
 log() {
-    echo "$@" >> "$LOGFILE"
-    if [[ $debug -eq 1 ]]; then
-        echo "$@" >> "$output_file"
-    fi
-    echo "$@"
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOGFILE"
 }
-log_info() { # does not print to terminal, only to log
-    echo "$@" >> "$LOGFILE"
-    if [[ $debug -eq 1 ]]; then
-        echo "$@" >> "$output_file"
-    fi
+log_info() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*" >> "$LOGFILE"
 }
-ring_bell() {
-    echo -e "\a" &
-}
-line_sep() {
-    echo "----------------------------------"
-}
-prompt_continue() {
-    read -r -p "Press ENTER to continue or Ctrl+C to abort..."
-}
+line_sep() { echo "----------------------------------"; }
+ring_bell() { echo -e "\a" & }
+prompt_continue() { read -r -p "Press ENTER to continue or Ctrl+C to abort..."; }
 
-##### MANAGE ARGS #####
-if [ $# -gt 0 ]; then
-    for arg in "$@"; do
-        case "$arg" in
-            --help) help=1 ;;
-            --version) version_arg=1 ;;
-            --license) license=1 ;;
-            --debug) debug=1 ;;
-            *) echo "Unknown option: $arg"; exit 1 ;;
-        esac
-    done
-fi
+##### ARG PARSING (minimal) #####
+for arg in "$@"; do
+    case "$arg" in
+        --debug) debug=1 ;;
+        --help) echo "Source this file only; used by other scripts."; exit 0 ;;
+    esac
+done
 
-if [[ $help -eq 1 ]]; then
-    echo "Usage: $0 [OPTIONS]"
-    echo "Options:"
-    echo "    --debug      Enable debug mode"
-    echo "    --help       Display this help message"
-    echo "    --license    Show license information"
-    echo "    --version    Show version information"
-    exit 0
-elif [[ $version_arg -eq 1 ]]; then
-    echo "$0 $version"; exit 0
-elif [[ $license -eq 1 ]]; then
-    curl https://www.gnu.org/licenses/gpl-3.0.txt | less; exit 0
-elif [[ $debug -eq 1 ]]; then
-    set -x
-    touch "$LOGFILE" "$output_file"
-    exec > >(tee -a "$output_file") 2>&1
-    log "Debug mode enabled."
-else
-    touch "$LOGFILE"
-    log_info "Start time: $start_time"
-fi
-
-##### CHECK FOR SUDO #####
-log_info "Checking for `sudo` access..."
+##### SUDO CHECK #####
 if [[ $EUID -ne 0 ]]; then
-    log "`sudo` access is required. Please run 'sudo !!'"
+    echo "This script requires root (sudo). Please run with sudo."
     exit 1
 fi
 
-# Convenience: create logs directory if needed
-mkdir -p ./logs 2>/dev/null || true
+##### DISTRIBUTION DETECTION #####
+detect_distro() {
+    # Prefer /etc/os-release (standard)
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        distro_id=${ID:-}
+        distro_name=${NAME:-}
+        distro_like=${ID_LIKE:-}
+        version_id=${VERSION_ID:-}
+        # CODENAME may be in VERSION_CODENAME or in VERSION
+        codename=${VERSION_CODENAME:-}
+        if [[ -z "$codename" && -n "$VERSION" ]]; then
+            # try to extract code name from VERSION if present in parentheses
+            codename=$(echo "$VERSION" | sed -n 's/.*(\(.*\)).*/\1/p' || true)
+        fi
+    else
+        # fallback
+        distro_id=$(uname -s)
+        distro_name="$distro_id"
+        version_id=$(uname -r)
+        codename=""
+    fi
+
+    # Normalize common names
+    distro_id=$(echo "$distro_id" | tr '[:upper:]' '[:lower:]')
+    codename=$(echo "$codename" | tr '[:upper:]' '[:lower:]')
+
+    log "[os_misc] Detected distro: ID=$distro_id NAME='$distro_name' VERSION=$version_id CODENAME=$codename"
+}
+
+##### APT / REPO HELPERS #####
+# Ensure apt-get update runs at most once per session
+APT_UPDATED=0
+apt_get_update() {
+    if [[ $APT_UPDATED -eq 0 ]]; then
+        log "[os_misc] Running apt-get update..."
+        apt-get update -y || true
+        APT_UPDATED=1
+    else
+        log "[os_misc] apt-get update already run in this session."
+    fi
+}
+
+# Ensures 'universe' (and multiverse) is enabled on Ubuntu / Mint
+ensure_universe_repo() {
+    # Only relevant for Ubuntu-family distributions
+    if [[ "$distro_id" == "ubuntu" || "$distro_id" == "linuxmint" || "$distro_like" == *"ubuntu"* ]]; then
+        log "[os_misc] Ensuring 'universe' repository is enabled for $distro_id."
+        apt_get_update
+        # software-properties-common provides add-apt-repository
+        apt-get install -y software-properties-common apt-transport-https gnupg || true
+        # attempt to enable universe/multiverse
+        add-apt-repository universe -y || true
+        add-apt-repository multiverse -y || true
+        apt_get_update
+        log "[os_misc] Universe/multiverse repositories ensured (if supported)."
+    else
+        log "[os_misc] Not Ubuntu-family (skipping universe enable)."
+    fi
+}
+
+# Optionally enable Debian non-free (if needed)
+enable_debian_nonfree() {
+    if [[ "$distro_id" == "debian" || "$distro_like" == *"debian"* ]]; then
+        log "[os_misc] Ensuring Debian non-free repositories are present (may require manual review)."
+        if grep -qE "non-free" /etc/apt/sources.list 2>/dev/null ; then
+            log "[os_misc] non-free already present in sources.list"
+        else
+            # append non-free to existing deb lines (best-effort)
+            cp /etc/apt/sources.list /etc/apt/sources.list.bak 2>/dev/null || true
+            sed -i 's/ main$/ main contrib non-free/' /etc/apt/sources.list || true
+            apt_get_update
+            log "[os_misc] Added contrib/non-free to sources.list (verify manually)."
+        fi
+    fi
+}
+
+# Install packages with apt-get; automatically calls repo helpers for Ubuntu/Mint
+# Usage: install_packages pkg1 pkg2 ...
+install_packages() {
+    if [[ $# -eq 0 ]]; then
+        log "[os_misc] install_packages called with no args."
+        return 0
+    fi
+    # If Ubuntu-family, ensure universe/multiverse available
+    if [[ "$distro_id" == "ubuntu" || "$distro_id" == "linuxmint" || "$distro_like" == *"ubuntu"* ]]; then
+        ensure_universe_repo
+    fi
+    apt_get_update
+    log "[os_misc] Installing packages: $*"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" || {
+        log "[os_misc] apt-get install failed for: $*  (check logs)"
+        return 2
+    }
+    return 0
+}
+
+##### INITIALIZE DETECTION ON SOURCE #####
+detect_distro
+
+# Expose distro vars to environment for convenience
+export distro_id distro_name distro_like version_id codename

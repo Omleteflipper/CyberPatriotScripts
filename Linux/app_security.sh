@@ -1,38 +1,58 @@
 #!/bin/bash
 # app_security.sh
-# - Install security packages & run rootkit checks
-# - SSH hardening helper
-# - Small helper to set IDS interface (same interactive block as defense.sh)
-# - NOTE: this script will source os_misc.sh and may prompt for interface if NET_IFACE not provided
+# - Install security packages (uses install_packages wrapper from os_misc)
+# - Configure rkhunter defaults & run update/check/propupd
+# - Run chkrootkit (if present)
+# - SSH hardening helper (sets common robust options)
+# - Optional interactive helper to set IDS interface (Suricata/ntopng) safely with backups
+#
+# NOTE: This script attempts to be additive and non-destructive. It creates backups before changes.
 
+set -euo pipefail
 source ./os_misc.sh
-log "[app_security] Installing application security packages and hardening config."
+log "[app_security] Starting application security setup."
 
-# install a minimal set (kept conservative)
-PACKAGES=(rkhunter chkrootkit clamav clamav-daemon libpam-google-authenticator)
-apt-get update -y
-apt-get install -y "${PACKAGES[@]}" || log "[app_security] Some packages failed to install; check apt logs."
+# CURATED SECURITY PACKAGE LIST
+SEC_PACKAGES=(rkhunter chkrootkit clamav clamav-daemon libpam-google-authenticator apparmor apparmor-utils fail2ban net-tools debsums)
+# Use install_packages wrapper (will enable universe on Ubuntu-family if needed)
+install_packages "${SEC_PACKAGES[@]}" || log "[app_security] Some packages failed to install; check apt logs."
 
-# Run rootkit checks (non-fatal)
-log "[app_security] Running chkrootkit (if available)..."
-chkrootkit || true
-
-log "[app_security] Running rkhunter update/check (if available)..."
+# rkhunter default config (safe, mirrors original)
+log "[app_security] Writing /etc/default/rkhunter (backup preserved)."
+cp /etc/default/rkhunter /etc/default/rkhunter.bak 2>/dev/null || true
 cat > /etc/default/rkhunter << EOF
 CRON_DAILY_RUN="yes"
 CRON_DB_UPDATE="yes"
 APT_AUTOGEN="yes"
 REPORT_EMAIL="root"
 EOF
-rkhunter --update || true
-rkhunter --check || true
-rkhunter --propupd || true
 
-# SSH hardening (same as previously)
+# Run rkhunter checks (best-effort)
+if command -v rkhunter &> /dev/null; then
+    log "[app_security] Updating rkhunter DB and running checks (may be slow)."
+    rkhunter --update || true
+    rkhunter --check || true
+    rkhunter --propupd || true
+fi
+
+# Run chkrootkit if available
+if command -v chkrootkit &> /dev/null; then
+    log "[app_security] Running chkrootkit..."
+    chkrootkit || true
+fi
+
+# Clam AV db update (if present)
+if command -v freshclam &> /dev/null; then
+    log "[app_security] Updating ClamAV DB..."
+    freshclam || true
+fi
+
+# SSH hardening - create a backup and set safe defaults
 if command -v sshd &> /dev/null; then
-    log "[app_security] Hardening SSH configuration..."
+    log "[app_security] Hardening SSH config (backing up current file)."
     sshd_config="/etc/ssh/sshd_config"
     cp "$sshd_config" "${sshd_config}.bak" 2>/dev/null || true
+
     set_sshd_setting() {
         local setting="$1"
         local value="$2"
@@ -42,18 +62,26 @@ if command -v sshd &> /dev/null; then
             echo "${setting} ${value}" >> "$sshd_config"
         fi
     }
+
     set_sshd_setting "PermitRootLogin" "no"
     set_sshd_setting "PasswordAuthentication" "no"
     set_sshd_setting "ChallengeResponseAuthentication" "no"
     set_sshd_setting "UsePAM" "yes"
-    systemctl restart ssh || true
-    log "[app_security] SSH hardening applied (verify manually)."
+    set_sshd_setting "HostbasedAuthentication" "no"
+    set_sshd_setting "Protocol" "2"
+    set_sshd_setting "LogLevel" "VERBOSE"
+    set_sshd_setting "X11Forwarding" "no"
+    set_sshd_setting "MaxAuthTries" "3"
+    set_sshd_setting "PermitEmptyPasswords" "no"
+
+    # Restart sshd (best-effort)
+    systemctl restart ssh || log "[app_security] ssh restart returned non-zero; verify sshd_config before reconnecting."
+    log "[app_security] SSH hardening applied; verify manually."
 fi
 
-# === NEW: optional small helper to set interface for IDS tools if desired ===
-# This mirrors the defense.sh helper so user can run it from either script.
+# === Optional: Interactive helper to set IDS interface (Suricata/ntopng)
 if [[ -z "${NET_IFACE:-}" ]]; then
-    read -r -p "Do you want to set the network interface for IDS services now? (y/N): " _ans_iface
+    read -r -p "Do you want to configure an interface for Suricata/ntopng now? (y/N): " _ans_iface
     if [[ "${_ans_iface,,}" == "y" ]]; then
         echo
         echo "Run 'ip addr show' to list interfaces and find the one with your IP."
@@ -65,24 +93,28 @@ if [[ -z "${NET_IFACE:-}" ]]; then
 fi
 
 if [[ -n "${NET_IFACE:-}" ]]; then
-    log "[app_security] NET_IFACE set to $NET_IFACE. Attempting to update suricata/ntopng configs (if present)."
+    log "[app_security] NET_IFACE set to $NET_IFACE; will attempt safe edits with backups."
 
-    # Suricata
+    # Backup dir
+    mkdir -p ./backups/ids || true
+
+    # Suricata: try to update simple `interface:` lines, otherwise add a comment/notice (YAML is fragile with sed)
     if [[ -f /etc/suricata/suricata.yaml ]]; then
-        mkdir -p ./backups/suricata || true
-        cp /etc/suricata/suricata.yaml ./backups/suricata/suricata.yaml.bak
+        cp /etc/suricata/suricata.yaml ./backups/ids/suricata.yaml.bak 2>/dev/null || true
         if grep -qE '^\s*interface:' /etc/suricata/suricata.yaml; then
             sed -i "s|^\(\s*interface:\s*\).*|\1${NET_IFACE}|" /etc/suricata/suricata.yaml
+            log "[app_security] Updated simple 'interface:' line in suricata.yaml (verify more complex YAML sections manually)."
         else
-            echo "# Note: Please ensure Suricata is set to monitor interface: $NET_IFACE" >> /etc/suricata/suricata.yaml
+            echo "# NOTE: Please set Suricata to monitor interface: ${NET_IFACE}" >> /etc/suricata/suricata.yaml
+            log "[app_security] Appended note to suricata.yaml instructing interface change (manual review recommended)."
         fi
-        log "[app_security] Suricata config updated (verify)."
+    else
+        log "[app_security] /etc/suricata/suricata.yaml not found; skipping Suricata config."
     fi
 
-    # ntopng
+    # ntopng: try to set -i or interface= lines
     if [[ -f /etc/ntopng/ntopng.conf ]]; then
-        mkdir -p ./backups/ntopng || true
-        cp /etc/ntopng/ntopng.conf ./backups/ntopng/ntopng.conf.bak
+        cp /etc/ntopng/ntopng.conf ./backups/ids/ntopng.conf.bak 2>/dev/null || true
         if grep -qE '^\s*-i\s+' /etc/ntopng/ntopng.conf; then
             sed -i "s|^\(\s*-i\s*\).*| -i ${NET_IFACE}|" /etc/ntopng/ntopng.conf
         elif grep -qE '^\s*interface=' /etc/ntopng/ntopng.conf; then
@@ -91,14 +123,19 @@ if [[ -n "${NET_IFACE:-}" ]]; then
             echo "-i ${NET_IFACE}" >> /etc/ntopng/ntopng.conf
         fi
         log "[app_security] ntopng config updated (verify)."
+    else
+        log "[app_security] /etc/ntopng/ntopng.conf not found; skipping ntopng config."
     fi
 
-    read -r -p "Restart suricata/ntopng now? (y/N): " _r2
+    # Ask user whether to restart services
+    read -r -p "Restart suricata/ntopng services now (if present)? (y/N): " _r2
     if [[ "${_r2,,}" == "y" ]]; then
         systemctl restart suricata || true
         systemctl restart ntopng || true
-        log "[app_security] restarted suricata/ntopng (if available)."
+        log "[app_security] Attempted to restart suricata/ntopng (if available)."
+    else
+        log "[app_security] Skipped restarting IDS services; remember to restart after manual verification."
     fi
 fi
 
-log "[app_security] Done."
+log "[app_security] Completed application security tasks."
