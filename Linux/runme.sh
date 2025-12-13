@@ -1,12 +1,28 @@
 #!/bin/bash
 # runme.sh
-# - Master orchestrator: executes modules in a safe order
+# - Master orchestrator
 # - Usage: sudo ./runme.sh [--yes] [--only module1,module2]
-# - Creates logs directory; reports summary at the end
 
-set -euo pipefail
+set -Eeuo pipefail
+
+BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$BASE_DIR/scripts"
+LOG_DIR="$BASE_DIR/logs"
+
+mkdir -p "$LOG_DIR"
+
+MASTER_LOG="$LOG_DIR/run-$(date '+%Y-%m-%d_%H-%M-%S').log"
+
+# Capture everything (stdout + stderr) to terminal AND master log
+exec > >(tee -a "$MASTER_LOG") 2> >(tee -a "$MASTER_LOG" >&2)
+
+echo "Log file: $MASTER_LOG"
+echo "Started at $(date)"
+echo
+
 AUTO=0
 ONLY=""
+
 if [[ "${1:-}" == "--yes" ]]; then
     AUTO=1
 fi
@@ -14,27 +30,26 @@ if [[ "${1:-}" == "--only" ]]; then
     ONLY="${2:-}"
 fi
 
-LOGDIR="./run_logs"
-mkdir -p "$LOGDIR"
-
-# verify os_misc exists
-if [[ ! -f ./os_misc.sh ]]; then
-    echo "Missing os_misc.sh. Aborting."
+# Verify os_misc.sh
+if [[ ! -f "$SCRIPT_DIR/os_misc.sh" ]]; then
+    echo "[FATAL] Missing scripts/os_misc.sh. Aborting."
     exit 1
 fi
-chmod +x ./os_misc.sh
+chmod +x "$SCRIPT_DIR/os_misc.sh"
 
 run_script() {
     local script="$1"
     local name
-    name=$(basename "$script")
-    if [[ -n "$ONLY" ]]; then
-        if ! grep -qw "$name" <<< "$ONLY"; then
-            echo "Skipping $name (not in --only list)"
-            return
-        fi
+    name="$(basename "$script")"
+    local log="$LOG_DIR/${name}.log"
+
+    if [[ -n "$ONLY" ]] && ! grep -qw "$name" <<< "$ONLY"; then
+        echo "Skipping $name (not in --only list)"
+        return
     fi
-    echo "---- Running $name ----"
+
+    echo "========== Running $name =========="
+
     if [[ $AUTO -eq 0 ]]; then
         read -r -p "Run $name now? (Y/n): " ans
         if [[ "$ans" =~ ^[Nn] ]]; then
@@ -42,11 +57,23 @@ run_script() {
             return
         fi
     fi
-    bash "$script" 2>&1 | tee "${LOGDIR}/${name}.log"
-    echo "---- Completed $name ----"
+
+    # Run script and capture exit code correctly
+    set +e
+    bash "$script" > >(tee -a "$log") 2> >(tee -a "$log" >&2)
+    status=$?
+    set -e
+
+    if [[ $status -ne 0 ]]; then
+        echo "[ERROR] $name failed with exit code $status"
+    else
+        echo "[OK] $name completed successfully"
+    fi
+
+    echo "========== Completed $name =========="
+    echo
 }
 
-# Execution order (safe first)
 MODULES=(
   os_misc.sh
   app_updates.sh
@@ -61,14 +88,17 @@ MODULES=(
 )
 
 for m in "${MODULES[@]}"; do
-    if [[ -f "./${m}" ]]; then
-        run_script "./${m}"
+    script="$SCRIPT_DIR/$m"
+    if [[ -f "$script" ]]; then
+        run_script "$script"
     else
-        echo "Module ${m} not found; skipping."
+        echo "[WARN] Module $m not found; skipping."
     fi
 done
 
-echo "All modules processed. Logs available in $LOGDIR"
+echo "All modules processed."
+echo "Logs available in $LOG_DIR"
+
 if [[ $AUTO -eq 0 ]]; then
     read -r -p "Reboot now? (y/N): " r
     if [[ "$r" =~ ^[Yy] ]]; then
