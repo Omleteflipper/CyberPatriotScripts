@@ -7,7 +7,9 @@
 # - To run non-interactively, run and provide the interface via NET_IFACE env var:
 #      NET_IFACE=ens3 sudo ./defense.sh
 
-source ./os_misc.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/os_misc.sh"
+
 log "[defense] Starting defense module."
 
 # --- existing logic preserved (firewall backups, nft dry-run, ufw helper, clamav, knockd) ---

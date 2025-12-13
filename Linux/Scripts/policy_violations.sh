@@ -5,7 +5,9 @@
 #   - Unwanted software (games, servers, hacking tools)
 # - Produces logs only; destructive removals are manual by default
 #!/bin/bash
-source ./os_misc.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/os_misc.sh"
+
 log "[policy_violations] Detecting policy violations (non-destructive)."
 
 # ========== MALWARE INDICATORS ==========

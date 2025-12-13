@@ -3,7 +3,9 @@
 # - Audit running/enabled services, enable/disable critical ones
 # - Ensure auditd enabled, manage systemd timers, schedule tasks
 
-source ./os_misc.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/os_misc.sh"
+
 log "[service_audit] Starting service audit."
 
 # List running services and enabled units

@@ -5,7 +5,9 @@
 # - Set default password for created users (NEW_PASSWORD variable)
 # - Configure GRUB password with explicit confirmation & backups (safe)
 
-source ./os_misc.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/os_misc.sh"
+
 log "[account_policies] Starting account policy tasks."
 
 # Backups

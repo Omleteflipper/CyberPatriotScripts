@@ -9,7 +9,8 @@
 # NOTE: This script attempts to be additive and non-destructive. It creates backups before changes.
 
 set -euo pipefail
-source ./os_misc.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/os_misc.sh"
 log "[app_security] Starting application security setup."
 
 # CURATED SECURITY PACKAGE LIST

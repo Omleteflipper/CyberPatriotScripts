@@ -13,7 +13,9 @@
 # /etc/apt/sources.list.d/cyberpatriot.list so the original file is preserved.
 
 set -euo pipefail
-source ./os_misc.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/os_misc.sh"
+
 
 log "[app_updates] Starting package update and repo helper."
 

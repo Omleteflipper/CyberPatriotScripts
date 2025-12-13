@@ -5,7 +5,9 @@
 #   and keeps backups of /etc/default/grub and /etc/grub.d/40_custom.
 # - NOTE: GRUB edits can make systems unbootable. This script requires confirmation.
 
-source ./os_misc.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/os_misc.sh"
+
 log "[local_policies] Applying local policy and sysctl hardening."
 
 # (preserve auditd + sysctl blocks from earlier)
