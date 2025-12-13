@@ -1,7 +1,8 @@
+#!/bin/bash
 # user_audit.sh
 # - Audit user accounts, groups, sudoers, failed login attempts, password aging
 # - Warn about weak/empty password shells, locked accounts etc.
-#!/bin/bash
+
 source ./os_misc.sh
 log "[user_audit] Starting user and auth audit."
 

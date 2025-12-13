@@ -1,8 +1,9 @@
+#!/bin/bash
 # runme.sh
 # - Master orchestrator: executes modules in a safe order
 # - Usage: sudo ./runme.sh [--yes] [--only module1,module2]
 # - Creates logs directory; reports summary at the end
-#!/bin/bash
+
 set -euo pipefail
 AUTO=0
 ONLY=""

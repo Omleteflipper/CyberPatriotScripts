@@ -1,7 +1,8 @@
+#!/bin/bash
 # service_audit.sh
 # - Audit running/enabled services, enable/disable critical ones
 # - Ensure auditd enabled, manage systemd timers, schedule tasks
-#!/bin/bash
+
 source ./os_misc.sh
 log "[service_audit] Starting service audit."
 
