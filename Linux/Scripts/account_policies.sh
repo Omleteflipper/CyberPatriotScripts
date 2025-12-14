@@ -6,7 +6,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/os_misc.sh"
-NEW_PASSWORD="CyberPatr!0t"
+NEW_PASSWORD_PREFIX="CyberPatr!0t"
 
 log "[account_policies] Starting account policy tasks."
 
@@ -86,11 +86,19 @@ done
 # change passwords for authorized users
 read -r -p "Change all user's passwords? This can lock you out! (y/N): " ans
 if [[ "$ans" =~ ^[Yy] ]]; then
-        for u in "${USERS[@]}" "${ADMINS[@]}"; do
-            log "[account_policies] Setting password for user: $u"
-            echo "$u:$NEW_PASSWORD" | chpasswd
-            log "[account_policies] Password updated for user: $u"
-        done
+    PASSWORD_LOG="$SCRIPT_DIR/password_log.txt"
+    : > "$PASSWORD_LOG" # clear previous password log
+
+    count=0
+    for u in "${USERS[@]}" "${ADMINS[@]}"; do
+        PASSWORD="$NEW_PASSWORD_PREFIX:$(printf "%03d" $count)"
+        log "[account_policies] Setting password for user: $u"
+        echo "$u:$PASSWORD" | chpasswd
+        echo "$u:$PASSWORD" >> "$PASSWORD_LOG"
+        log "[account_policies] Password updated for user: $u"
+        ((count++))
+    done
+    log "[account_policies] Passwords saved to $PASSWORD_LOG"
 fi
 
 # =========================================================
@@ -98,7 +106,7 @@ fi
 # =========================================================
 
 log "[account_policies] Locking root account"
-echo "root:$NEW_PASSWORD" | chpasswd || true
+echo "root:$NEW_PASSWORD_PREFIX:ROOT" | chpasswd || true
 passwd -l root || true
 usermod -s /usr/sbin/nologin root || true
 
@@ -106,7 +114,7 @@ usermod -s /usr/sbin/nologin root || true
 if command -v grub-mkpasswd-pbkdf2 &> /dev/null; then
     read -r -p "Configure GRUB password? This can lock you out! (y/N): " ans
     if [[ "$ans" =~ ^[Yy] ]]; then
-        HASH=$(echo -e "$NEW_PASSWORD\n$NEW_PASSWORD" | grub-mkpasswd-pbkdf2 | grep -o "grub.pbkdf2.sha512.*")
+        HASH=$(echo -e "$NEW_PASSWORD_PREFIX\n$NEW_PASSWORD_PREFIX" | grub-mkpasswd-pbkdf2 | grep -o "grub.pbkdf2.sha512.*")
         [[ -n "$HASH" ]] && echo -e "set superusers=\"root\"\npassword_pbkdf2 root $HASH" >> /etc/grub.d/40_custom && update-grub
     fi
 fi
