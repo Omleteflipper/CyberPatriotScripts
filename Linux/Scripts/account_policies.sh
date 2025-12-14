@@ -6,6 +6,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/os_misc.sh"
+NEW_PASSWORD="CyberPatr!0t"
 
 log "[account_policies] Starting account policy tasks."
 
@@ -82,11 +83,19 @@ for a in "${ADMINS[@]}"; do
     id "$a" &>/dev/null || { read -r -p "Create admin '$a'? (y/N): " ans; [[ "$ans" =~ ^[Yy] ]] && useradd -m "$a" && usermod -aG sudo "$a"; }
 done
 
+# change passwords for authorized users
+read -r -p "Change all user's passwords? This can lock you out! (y/N): " ans
+if [[ "$ans" =~ ^[Yy] ]]; then
+        for u in "${USERS[@]}" "${ADMINS[@]}"; do
+            log "[account_policies] Setting password for user: $u"
+            echo "$u:$NEW_PASSWORD" | chpasswd
+            log "[account_policies] Password updated for user: $u"
+        done
+fi
+
 # =========================================================
 # ROOT & BOOT PROTECTION
 # =========================================================
-
-NEW_PASSWORD="CyberPatr!0t"
 
 log "[account_policies] Locking root account"
 echo "root:$NEW_PASSWORD" | chpasswd || true
